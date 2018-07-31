@@ -2,6 +2,7 @@
 // returns data suitable for use by the Grafana SimpleJSON plugin.
 package main // import "github.com/QubitProducts/jaeger-simplejson"
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -30,10 +31,6 @@ type jaegerSJHandler struct {
 	linkURL *url.URL
 }
 
-func (jh *jaegerSJHandler) GrafanaQuery(from, to time.Time, interval time.Duration, maxDPs int, targets []string) (map[string][]grafanasj.Data, error) {
-	return nil, nil
-}
-
 type traceTag struct {
 	Key   string      `json:"key"`
 	Type  string      `json:"type"`
@@ -42,6 +39,7 @@ type traceTag struct {
 
 type traceSpan struct {
 	StartTime     int64      `json:"startTime"`
+	Duration      int64      `json:"duration"`
 	OperationName string     `json:"operationName"`
 	TraceID       string     `json:"traceID"`
 	Tags          []traceTag `json:"tags"`
@@ -52,19 +50,27 @@ type traceResp struct {
 	Spans   []traceSpan `json:"spans"`
 }
 
-func (jh *jaegerSJHandler) GrafanaAnnotations(from, to time.Time, query string) ([]grafanasj.Annotation, error) {
-	req, err := url.Parse(fmt.Sprintf("%s/api/traces", jh.base))
+func (jh *jaegerSJHandler) traceURL(id string) string {
+	return fmt.Sprintf("%v/trace/%v", jh.linkURL, id)
+}
+
+func (jh *jaegerSJHandler) runQuery(ctx context.Context, from, to time.Time, service string) ([]traceResp, error) {
+	u, err := url.Parse(fmt.Sprintf("%s/api/traces", jh.base))
 	if err != nil {
 		return nil, err
 	}
-	q := req.Query()
+	q := u.Query()
 	q.Set("start", fmt.Sprintf("%v", from.UnixNano()/1000))
 	q.Set("end", fmt.Sprintf("%v", to.UnixNano()/1000))
-	q.Set("service", query)
-	req.RawQuery = q.Encode()
+	q.Set("service", service)
+	u.RawQuery = q.Encode()
 
-	log.Println("req: ", req.String())
-	resp, err := http.Get(req.String())
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -84,18 +90,115 @@ func (jh *jaegerSJHandler) GrafanaAnnotations(from, to time.Time, query string) 
 		}
 		return nil, errors.New("errors in response from jaeger")
 	}
+	return traces.Data, nil
+}
+
+func (jh *jaegerSJHandler) GrafanaQuery(ctx context.Context, from, to time.Time, interval time.Duration, maxDPs int, target string) ([]grafanasj.Data, error) {
+	return nil, nil
+}
+
+func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, from, to time.Time, target string) ([]grafanasj.TableColumn, error) {
+	tt, err := jh.runQuery(ctx, from, to, target)
+	if err != nil {
+		return nil, err
+	}
+
+	var times []interface{}
+	var ids []interface{}
+	var links []interface{}
+	var html []interface{}
+	var durs []interface{}
+	var spanCounts []interface{}
+	var errCounts []interface{}
+
+	for i := range tt {
+		ids = append(ids, tt[i].TraceID)
+		links = append(links, jh.traceURL(tt[i].TraceID))
+		html = append(html, fmt.Sprintf(`<a href="%v" target="_blank">%v</a>`, jh.traceURL(tt[i].TraceID), tt[i].TraceID))
+		spanCounts = append(spanCounts, len(tt[i].Spans))
+
+		start := int64(1<<63 - 1)
+		var duration int64
+		var errs int64
+
+		ss := tt[i].Spans
+		for j := range ss {
+			if ss[j].StartTime < start {
+				start = ss[j].StartTime
+			}
+			if ss[j].Duration > duration {
+				duration = ss[j].Duration
+			}
+			for k := range ss[j].Tags {
+				if ss[j].Tags[k].Key == "error" &&
+					ss[j].Tags[k].Type == "bool" {
+					errs++
+				}
+			}
+		}
+
+		times = append(times, time.Unix(0, start*1000))
+		errCounts = append(errCounts, errs)
+		durs = append(durs, float64(float64(duration)/1000))
+	}
+
+	res := []grafanasj.TableColumn{
+		{
+			Text:   "timestamp",
+			Type:   "time",
+			Values: times,
+		},
+		{
+			Text:   "trace_id",
+			Type:   "string",
+			Values: ids,
+		},
+		{
+			Text:   "link",
+			Type:   "string",
+			Values: links,
+		},
+		{
+			Text:   "html",
+			Type:   "string",
+			Values: html,
+		},
+		{
+			Text:   "duration",
+			Type:   "number",
+			Values: durs,
+		},
+		{
+			Text:   "spans",
+			Type:   "number",
+			Values: spanCounts,
+		},
+		{
+			Text:   "errors",
+			Type:   "number",
+			Values: errCounts,
+		},
+	}
+	return res, nil
+}
+
+func (jh *jaegerSJHandler) GrafanaAnnotations(ctx context.Context, from, to time.Time, query string) ([]grafanasj.Annotation, error) {
+	traces, err := jh.runQuery(ctx, from, to, query)
+	if err != nil {
+		return nil, err
+	}
 
 	answers := []grafanasj.Annotation{}
-	for i := range traces.Data {
-		for j := range traces.Data[i].Spans {
+	for i := range traces {
+		for j := range traces[i].Spans {
 			var tags []string
-			for k := range traces.Data[i].Spans[j].Tags {
-				tags = append(tags, fmt.Sprintf("%v:%v", traces.Data[i].Spans[j].Tags[k].Key, traces.Data[i].Spans[j].Tags[k].Value))
+			for k := range traces[i].Spans[j].Tags {
+				tags = append(tags, fmt.Sprintf("%v:%v", traces[i].Spans[j].Tags[k].Key, traces[i].Spans[j].Tags[k].Value))
 			}
 			answers = append(answers, grafanasj.Annotation{
-				Title: traces.Data[i].Spans[j].OperationName,
-				Text:  fmt.Sprintf(`<a href="%v/trace/%v" target="_blank">%v</a>`, jh.linkURL, traces.Data[i].Spans[j].TraceID, traces.Data[i].Spans[j].TraceID),
-				Time:  grafanasj.SimpleJSONPTime(time.Unix(0, traces.Data[i].Spans[j].StartTime*1000)),
+				Title: traces[i].Spans[j].OperationName,
+				Text:  fmt.Sprintf(`<a href="%v/trace/%v" target="_blank">%v</a>`, jh.linkURL, traces[i].Spans[j].TraceID, traces[i].Spans[j].TraceID),
+				Time:  time.Unix(0, traces[i].Spans[j].StartTime*1000),
 				Tags:  tags,
 			})
 		}
@@ -103,8 +206,14 @@ func (jh *jaegerSJHandler) GrafanaAnnotations(from, to time.Time, query string) 
 	return answers, nil
 }
 
-func (jh *jaegerSJHandler) GrafanaSearch(target string) ([]string, error) {
-	resp, err := http.Get(fmt.Sprintf("%s/api/services", jh.base.String()))
+func (jh *jaegerSJHandler) GrafanaSearch(ctx context.Context, target string) ([]string, error) {
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/services", jh.base.String()), nil)
+	if err != nil {
+		log.Printf("url err %v", err)
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
 	if err != nil {
 		log.Printf("url err %v", err)
 		return nil, err
