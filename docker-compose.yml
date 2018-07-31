@@ -4,7 +4,7 @@ services:
     build: .
     ports:
      - "5000:5000"
-    command: ["-addr=:5000", "-baseURL=http://jaeger:16686"]
+    command: ["-addr=:5000", "-baseURL=http://jaeger:16686", "-linkURL=http://localhost:16686"]
   grafana:
     image: "grafana/grafana:5.2.2"
     environment:
