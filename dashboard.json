@@ -70,7 +70,7 @@
   "gnetId": null,
   "graphTooltip": 0,
   "id": null,
-  "iteration": 1533119707354,
+  "iteration": 1533120891918,
   "links": [],
   "panels": [
     {
@@ -134,7 +134,7 @@
       },
       "yaxes": [
         {
-          "format": "µs",
+          "format": "s",
           "label": null,
           "logBase": 1,
           "max": null,
@@ -202,7 +202,7 @@
       "xBucketSize": null,
       "yAxis": {
         "decimals": null,
-        "format": "µs",
+        "format": "s",
         "logBase": 1,
         "max": null,
         "min": "0",
@@ -225,12 +225,12 @@
       },
       "id": 2,
       "links": [],
-      "pageSize": null,
+      "pageSize": 10,
       "scroll": true,
       "showHeader": true,
       "sort": {
-        "col": 5,
-        "desc": true
+        "col": null,
+        "desc": false
       },
       "styles": [
         {
@@ -325,7 +325,7 @@
           "pattern": "duration",
           "thresholds": [],
           "type": "number",
-          "unit": "ms"
+          "unit": "s"
         },
         {
           "alias": "",
@@ -341,7 +341,7 @@
           "pattern": "serviceDuration",
           "thresholds": [],
           "type": "number",
-          "unit": "ms"
+          "unit": "s"
         },
         {
           "alias": "",
@@ -430,5 +430,5 @@
   "timezone": "",
   "title": "Traces",
   "uid": "5MsMvjKmz",
-  "version": 1
+  "version": 3
 }

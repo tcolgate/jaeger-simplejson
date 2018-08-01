@@ -43,18 +43,26 @@ type traceSpan struct {
 	OperationName string     `json:"operationName"`
 	TraceID       string     `json:"traceID"`
 	Tags          []traceTag `json:"tags"`
+	ProcessID     string     `json:"processID"`
+	process       string
+}
+
+type traceProcesses struct {
+	ServiceName string     `json:"serviceName"`
+	Tags        []traceTag `json:"tags"`
 }
 
 type traceResp struct {
-	TraceID string      `json:"traceID"`
-	Spans   []traceSpan `json:"spans"`
+	TraceID   string                    `json:"traceID"`
+	Spans     []traceSpan               `json:"spans"`
+	Processes map[string]traceProcesses `json:"processes"`
 }
 
 func (jh *jaegerSJHandler) traceURL(id string) string {
 	return fmt.Sprintf("%v/trace/%v", jh.linkURL, id)
 }
 
-func (jh *jaegerSJHandler) runQuery(ctx context.Context, from, to time.Time, service string) ([]traceResp, error) {
+func (jh *jaegerSJHandler) runQuery(ctx context.Context, from, to time.Time, service string, limit int) ([]traceResp, error) {
 	u, err := url.Parse(fmt.Sprintf("%s/api/traces", jh.base))
 	if err != nil {
 		return nil, err
@@ -63,6 +71,11 @@ func (jh *jaegerSJHandler) runQuery(ctx context.Context, from, to time.Time, ser
 	q.Set("start", fmt.Sprintf("%v", from.UnixNano()/1000))
 	q.Set("end", fmt.Sprintf("%v", to.UnixNano()/1000))
 	q.Set("service", service)
+
+	if limit != 0 {
+		q.Set("limit", fmt.Sprintf("%d", limit))
+	}
+
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
@@ -94,11 +107,38 @@ func (jh *jaegerSJHandler) runQuery(ctx context.Context, from, to time.Time, ser
 }
 
 func (jh *jaegerSJHandler) GrafanaQuery(ctx context.Context, from, to time.Time, interval time.Duration, maxDPs int, target string) ([]grafanasj.Data, error) {
-	return nil, nil
+	tt, err := jh.runQuery(ctx, from, to, target, maxDPs)
+	if err != nil {
+		return nil, err
+	}
+
+	var res []grafanasj.Data
+
+	for i := range tt {
+		start := int64(1<<63 - 1)
+		var serviceDuration int64
+
+		ss := tt[i].Spans
+		for j := range ss {
+			if proc, ok := tt[i].Processes[ss[j].ProcessID]; ok &&
+				proc.ServiceName == target &&
+				ss[j].Duration > serviceDuration {
+
+				if ss[j].StartTime < start {
+					start = ss[j].StartTime
+					serviceDuration = ss[j].Duration
+				}
+			}
+		}
+		if serviceDuration != 0 {
+			res = append(res, grafanasj.Data{Time: time.Unix(0, start*1000), Value: float64(serviceDuration) / 1000000})
+		}
+	}
+	return res, nil
 }
 
 func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, from, to time.Time, target string) ([]grafanasj.TableColumn, error) {
-	tt, err := jh.runQuery(ctx, from, to, target)
+	tt, err := jh.runQuery(ctx, from, to, target, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +147,9 @@ func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, from, to time.
 	var ids []interface{}
 	var links []interface{}
 	var html []interface{}
+	var operations []interface{}
 	var durs []interface{}
+	var serviceDurs []interface{}
 	var spanCounts []interface{}
 	var errCounts []interface{}
 
@@ -118,6 +160,8 @@ func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, from, to time.
 		spanCounts = append(spanCounts, len(tt[i].Spans))
 
 		start := int64(1<<63 - 1)
+		var operation string
+		var serviceDuration int64
 		var duration int64
 		var errs int64
 
@@ -126,9 +170,18 @@ func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, from, to time.
 			if ss[j].StartTime < start {
 				start = ss[j].StartTime
 			}
+
 			if ss[j].Duration > duration {
 				duration = ss[j].Duration
 			}
+
+			if proc, ok := tt[i].Processes[ss[j].ProcessID]; ok &&
+				proc.ServiceName == target &&
+				ss[j].Duration > serviceDuration {
+				operation = ss[j].OperationName
+				serviceDuration = ss[j].Duration
+			}
+
 			for k := range ss[j].Tags {
 				if ss[j].Tags[k].Key == "error" &&
 					ss[j].Tags[k].Type == "bool" {
@@ -137,14 +190,16 @@ func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, from, to time.
 			}
 		}
 
+		operations = append(operations, operation)
 		times = append(times, time.Unix(0, start*1000))
 		errCounts = append(errCounts, errs)
-		durs = append(durs, float64(float64(duration)/1000))
+		durs = append(durs, float64(float64(duration)/1000000))
+		serviceDurs = append(serviceDurs, float64(float64(serviceDuration)/1000000))
 	}
 
 	res := []grafanasj.TableColumn{
 		{
-			Text:   "timestamp",
+			Text:   "Time",
 			Type:   "time",
 			Values: times,
 		},
@@ -152,6 +207,11 @@ func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, from, to time.
 			Text:   "trace_id",
 			Type:   "string",
 			Values: ids,
+		},
+		{
+			Text:   "operation",
+			Type:   "string",
+			Values: operations,
 		},
 		{
 			Text:   "link",
@@ -169,6 +229,11 @@ func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, from, to time.
 			Values: durs,
 		},
 		{
+			Text:   "serviceDuration",
+			Type:   "number",
+			Values: serviceDurs,
+		},
+		{
 			Text:   "spans",
 			Type:   "number",
 			Values: spanCounts,
@@ -183,25 +248,40 @@ func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, from, to time.
 }
 
 func (jh *jaegerSJHandler) GrafanaAnnotations(ctx context.Context, from, to time.Time, query string) ([]grafanasj.Annotation, error) {
-	traces, err := jh.runQuery(ctx, from, to, query)
+	tt, err := jh.runQuery(ctx, from, to, query, 0)
 	if err != nil {
 		return nil, err
 	}
 
 	answers := []grafanasj.Annotation{}
-	for i := range traces {
-		for j := range traces[i].Spans {
-			var tags []string
-			for k := range traces[i].Spans[j].Tags {
-				tags = append(tags, fmt.Sprintf("%v:%v", traces[i].Spans[j].Tags[k].Key, traces[i].Spans[j].Tags[k].Value))
+	for i := range tt {
+		start := int64(1<<63 - 1)
+		var tags []string
+
+		ss := tt[i].Spans
+		for j := range ss {
+			if proc, ok := tt[i].Processes[ss[j].ProcessID]; ok &&
+				proc.ServiceName == query &&
+				ss[j].StartTime < start {
+				// This should be the starting span for the queried service
+				start = ss[j].StartTime
+
+				tags = nil
+				for k := range proc.Tags {
+					tags = append(tags, fmt.Sprintf("%v=%v", proc.Tags[k].Key, proc.Tags[k].Value))
+				}
+				for k := range ss[j].Tags {
+					tags = append(tags, fmt.Sprintf("%v=%v", ss[j].Tags[k].Key, ss[j].Tags[k].Value))
+				}
 			}
-			answers = append(answers, grafanasj.Annotation{
-				Title: traces[i].Spans[j].OperationName,
-				Text:  fmt.Sprintf(`<a href="%v/trace/%v" target="_blank">%v</a>`, jh.linkURL, traces[i].Spans[j].TraceID, traces[i].Spans[j].TraceID),
-				Time:  time.Unix(0, traces[i].Spans[j].StartTime*1000),
-				Tags:  tags,
-			})
 		}
+
+		answers = append(answers, grafanasj.Annotation{
+			Title: tt[i].TraceID,
+			Text:  fmt.Sprintf(`<a href="%v/trace/%v" target="_blank">%v</a>`, jh.linkURL, tt[i].TraceID, tt[i].TraceID),
+			Time:  time.Unix(0, start*1000),
+			Tags:  tags,
+		})
 	}
 	return answers, nil
 }
@@ -229,11 +309,10 @@ func (jh *jaegerSJHandler) GrafanaSearch(ctx context.Context, target string) ([]
 		log.Printf("json err %v", err)
 		return nil, err
 	}
-	log.Printf("got: %v", services)
 
 	answers := []string{}
 	for _, s := range services.Data {
-		if strings.HasPrefix(s, target) {
+		if target == "*" || strings.HasPrefix(s, target) {
 			answers = append(answers, s)
 		}
 	}
