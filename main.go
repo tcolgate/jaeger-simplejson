@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	grafanasj "github.com/tcolgate/grafana-simple-json-go"
 	simplejson "github.com/tcolgate/grafana-simple-json-go"
 )
 
@@ -107,13 +106,13 @@ func (jh *jaegerSJHandler) runQuery(ctx context.Context, from, to time.Time, ser
 	return traces.Data, nil
 }
 
-func (jh *jaegerSJHandler) GrafanaQuery(ctx context.Context, target string, args simplejson.QueryArguments) ([]grafanasj.DataPoint, error) {
+func (jh *jaegerSJHandler) GrafanaQuery(ctx context.Context, target string, args simplejson.QueryArguments) ([]simplejson.DataPoint, error) {
 	tt, err := jh.runQuery(ctx, args.From, args.To, target, args.MaxDPs)
 	if err != nil {
 		return nil, err
 	}
 
-	var res []grafanasj.DataPoint
+	var res []simplejson.DataPoint
 
 	for i := range tt {
 		start := int64(1<<63 - 1)
@@ -132,27 +131,27 @@ func (jh *jaegerSJHandler) GrafanaQuery(ctx context.Context, target string, args
 			}
 		}
 		if serviceDuration != 0 {
-			res = append(res, grafanasj.DataPoint{Time: time.Unix(0, start*1000), Value: float64(serviceDuration) / 1000000})
+			res = append(res, simplejson.DataPoint{Time: time.Unix(0, start*1000), Value: float64(serviceDuration) / 1000000})
 		}
 	}
 	return res, nil
 }
 
-func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, target string, args simplejson.TableQueryArguments) ([]grafanasj.TableColumn, error) {
+func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, target string, args simplejson.TableQueryArguments) ([]simplejson.TableColumn, error) {
 	tt, err := jh.runQuery(ctx, args.From, args.To, target, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	var times grafanasj.TableTimeColumn
-	var ids grafanasj.TableStringColumn
-	var links grafanasj.TableStringColumn
-	var html grafanasj.TableStringColumn
-	var operations grafanasj.TableStringColumn
-	var durs grafanasj.TableNumberColumn
-	var serviceDurs grafanasj.TableNumberColumn
-	var spanCounts grafanasj.TableNumberColumn
-	var errCounts grafanasj.TableNumberColumn
+	var times simplejson.TableTimeColumn
+	var ids simplejson.TableStringColumn
+	var links simplejson.TableStringColumn
+	var html simplejson.TableStringColumn
+	var operations simplejson.TableStringColumn
+	var durs simplejson.TableNumberColumn
+	var serviceDurs simplejson.TableNumberColumn
+	var spanCounts simplejson.TableNumberColumn
+	var errCounts simplejson.TableNumberColumn
 
 	for i := range tt {
 		ids = append(ids, tt[i].TraceID)
@@ -198,7 +197,7 @@ func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, target string,
 		serviceDurs = append(serviceDurs, float64(float64(serviceDuration)/1000000))
 	}
 
-	res := []grafanasj.TableColumn{
+	res := []simplejson.TableColumn{
 		{
 			Text: "Time",
 			Data: times,
@@ -239,13 +238,13 @@ func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, target string,
 	return res, nil
 }
 
-func (jh *jaegerSJHandler) GrafanaAnnotations(ctx context.Context, from, to time.Time, query string) ([]grafanasj.Annotation, error) {
-	tt, err := jh.runQuery(ctx, from, to, query, 0)
+func (jh *jaegerSJHandler) GrafanaAnnotations(ctx context.Context, query string, args simplejson.AnnotationsArguments) ([]simplejson.Annotation, error) {
+	tt, err := jh.runQuery(ctx, args.From, args.To, query, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	answers := []grafanasj.Annotation{}
+	answers := []simplejson.Annotation{}
 	for i := range tt {
 		start := int64(1<<63 - 1)
 		var tags []string
@@ -268,7 +267,7 @@ func (jh *jaegerSJHandler) GrafanaAnnotations(ctx context.Context, from, to time
 			}
 		}
 
-		answers = append(answers, grafanasj.Annotation{
+		answers = append(answers, simplejson.Annotation{
 			Title: tt[i].TraceID,
 			Text:  fmt.Sprintf(`<a href="%v/trace/%v" target="_blank">%v</a>`, jh.linkURL, tt[i].TraceID, tt[i].TraceID),
 			Time:  time.Unix(0, start*1000),
@@ -334,10 +333,11 @@ func main() {
 		jaegersj.linkURL = link
 	}
 
-	h := grafanasj.New(
-		grafanasj.WithQuerier(jaegersj),
-		grafanasj.WithTableQuerier(jaegersj),
-		grafanasj.WithSearcher(jaegersj),
+	h := simplejson.New(
+		simplejson.WithQuerier(jaegersj),
+		simplejson.WithTableQuerier(jaegersj),
+		simplejson.WithSearcher(jaegersj),
+		simplejson.WithAnnotator(jaegersj),
 	)
 	err = http.ListenAndServe(addr, h)
 	if err != nil {
