@@ -13,7 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tcolgate/grafanasj"
+	grafanasj "github.com/tcolgate/grafana-simple-json-go"
+	simplejson "github.com/tcolgate/grafana-simple-json-go"
 )
 
 var addr string
@@ -106,13 +107,13 @@ func (jh *jaegerSJHandler) runQuery(ctx context.Context, from, to time.Time, ser
 	return traces.Data, nil
 }
 
-func (jh *jaegerSJHandler) GrafanaQuery(ctx context.Context, from, to time.Time, interval time.Duration, maxDPs int, target string) ([]grafanasj.Data, error) {
-	tt, err := jh.runQuery(ctx, from, to, target, maxDPs)
+func (jh *jaegerSJHandler) GrafanaQuery(ctx context.Context, target string, args simplejson.QueryArguments) ([]grafanasj.DataPoint, error) {
+	tt, err := jh.runQuery(ctx, args.From, args.To, target, args.MaxDPs)
 	if err != nil {
 		return nil, err
 	}
 
-	var res []grafanasj.Data
+	var res []grafanasj.DataPoint
 
 	for i := range tt {
 		start := int64(1<<63 - 1)
@@ -131,33 +132,33 @@ func (jh *jaegerSJHandler) GrafanaQuery(ctx context.Context, from, to time.Time,
 			}
 		}
 		if serviceDuration != 0 {
-			res = append(res, grafanasj.Data{Time: time.Unix(0, start*1000), Value: float64(serviceDuration) / 1000000})
+			res = append(res, grafanasj.DataPoint{Time: time.Unix(0, start*1000), Value: float64(serviceDuration) / 1000000})
 		}
 	}
 	return res, nil
 }
 
-func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, from, to time.Time, target string) ([]grafanasj.TableColumn, error) {
-	tt, err := jh.runQuery(ctx, from, to, target, 0)
+func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, target string, args simplejson.TableQueryArguments) ([]grafanasj.TableColumn, error) {
+	tt, err := jh.runQuery(ctx, args.From, args.To, target, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	var times []interface{}
-	var ids []interface{}
-	var links []interface{}
-	var html []interface{}
-	var operations []interface{}
-	var durs []interface{}
-	var serviceDurs []interface{}
-	var spanCounts []interface{}
-	var errCounts []interface{}
+	var times grafanasj.TableTimeColumn
+	var ids grafanasj.TableStringColumn
+	var links grafanasj.TableStringColumn
+	var html grafanasj.TableStringColumn
+	var operations grafanasj.TableStringColumn
+	var durs grafanasj.TableNumberColumn
+	var serviceDurs grafanasj.TableNumberColumn
+	var spanCounts grafanasj.TableNumberColumn
+	var errCounts grafanasj.TableNumberColumn
 
 	for i := range tt {
 		ids = append(ids, tt[i].TraceID)
 		links = append(links, jh.traceURL(tt[i].TraceID))
 		html = append(html, fmt.Sprintf(`<a href="%v" target="_blank">%v</a>`, jh.traceURL(tt[i].TraceID), tt[i].TraceID))
-		spanCounts = append(spanCounts, len(tt[i].Spans))
+		spanCounts = append(spanCounts, float64(len(tt[i].Spans)))
 
 		start := int64(1<<63 - 1)
 		var operation string
@@ -192,56 +193,47 @@ func (jh *jaegerSJHandler) GrafanaQueryTable(ctx context.Context, from, to time.
 
 		operations = append(operations, operation)
 		times = append(times, time.Unix(0, start*1000))
-		errCounts = append(errCounts, errs)
+		errCounts = append(errCounts, float64(errs))
 		durs = append(durs, float64(float64(duration)/1000000))
 		serviceDurs = append(serviceDurs, float64(float64(serviceDuration)/1000000))
 	}
 
 	res := []grafanasj.TableColumn{
 		{
-			Text:   "Time",
-			Type:   "time",
-			Values: times,
+			Text: "Time",
+			Data: times,
 		},
 		{
-			Text:   "trace_id",
-			Type:   "string",
-			Values: ids,
+			Text: "trace_id",
+			Data: ids,
 		},
 		{
-			Text:   "operation",
-			Type:   "string",
-			Values: operations,
+			Text: "operation",
+			Data: operations,
 		},
 		{
-			Text:   "link",
-			Type:   "string",
-			Values: links,
+			Text: "link",
+			Data: links,
 		},
 		{
-			Text:   "html",
-			Type:   "string",
-			Values: html,
+			Text: "html",
+			Data: html,
 		},
 		{
-			Text:   "duration",
-			Type:   "number",
-			Values: durs,
+			Text: "duration",
+			Data: durs,
 		},
 		{
-			Text:   "serviceDuration",
-			Type:   "number",
-			Values: serviceDurs,
+			Text: "serviceDuration",
+			Data: serviceDurs,
 		},
 		{
-			Text:   "spans",
-			Type:   "number",
-			Values: spanCounts,
+			Text: "spans",
+			Data: spanCounts,
 		},
 		{
-			Text:   "errors",
-			Type:   "number",
-			Values: errCounts,
+			Text: "errors",
+			Data: errCounts,
 		},
 	}
 	return res, nil
@@ -342,12 +334,12 @@ func main() {
 		jaegersj.linkURL = link
 	}
 
-	h := grafanasj.New(jaegersj)
-	http.HandleFunc("/", h.HandleRoot)
-	http.HandleFunc("/query", h.HandleQuery)
-	http.HandleFunc("/search", h.HandleSearch)
-	http.HandleFunc("/annotations", h.HandleAnnotations)
-	err = http.ListenAndServe(addr, nil)
+	h := grafanasj.New(
+		grafanasj.WithQuerier(jaegersj),
+		grafanasj.WithTableQuerier(jaegersj),
+		grafanasj.WithSearcher(jaegersj),
+	)
+	err = http.ListenAndServe(addr, h)
 	if err != nil {
 		log.Fatalf("error, %v", err)
 	}

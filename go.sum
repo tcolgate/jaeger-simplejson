@@ -1,2 +1,4 @@
+github.com/tcolgate/grafana-simple-json-go v0.9.6 h1:wNbPWL7lSrdLDkPJBANYmXuZdIbdo+WVyb6GKC0iYIU=
+github.com/tcolgate/grafana-simple-json-go v0.9.6/go.mod h1:z5sME/OZPmZUpA4KPDhpKbuPrrQHfoktrA7GwqVJvGU=
 github.com/tcolgate/grafanasj v1.0.0 h1:a3sfVBhPvgZRE7DZL+5xHTtejcRUQbfyNlpccFyrtq8=
 github.com/tcolgate/grafanasj v1.0.0/go.mod h1:Bn1tIOErVChoGesF4AU0jKP4m6oEVOM6kVKIrjjHqG4=
